@@ -1,15 +1,16 @@
-# include <stdlib.h>
-# include <stdio.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <omp.h>
 
-#define INFINITE (1<<30) // a very large positive integer
+#define INFINITE (1 << 30) // a very large positive integer
 
 struct direct_edge_struct;
-struct direct_edge_struct {
-  int destination_node;
-  int weight;
-  struct direct_edge_struct *next;
+struct direct_edge_struct
+{
+	int destination_node;
+	int weight;
+	struct direct_edge_struct *next;
 };
 
 int num_nodes, num_edges;
@@ -24,7 +25,7 @@ struct direct_edge_struct **nodes;
 int *d;
 char *P;
 
-int main ( int argc, char **argv );
+int main(int argc, char **argv);
 void read_graph(char *filename);
 float dijkstra();
 
@@ -35,90 +36,117 @@ char *concat();
 void ecrireDistances();
 
 /******************************************************************************/
-int main ( int argc, char **argv ){
+int main(int argc, char **argv){
 
-  if (argc < 2){
-    fprintf(stderr,"Usage: dijkstra <graph file name>\n");
-    exit(-1);
-  }
-  else
-    read_graph(argv[1]);
+	if (argc < 2)
+	{
+		fprintf(stderr, "Usage: dijkstra <graph file name>\n");
+		exit(-1);
+	}
+	else
+		read_graph(argv[1]);
 
-  float temps = dijkstra();
-  afficherDistances();
-  ecrireDistances(concat(argv[1],"DISTANCES"));
-  printf("Temps sequentiel : %f\n", temps);
+	float temps = dijkstra();
+	afficherDistances();
+	ecrireDistances(concat(argv[1], "DISTANCES"));
+	printf("Temps de calcul parallel : %f\n", temps);
 
-  free(nodes);
-  free(edges);
-  free(d);
-  free(P);
-  return 0;
+	free(nodes);
+	free(edges);
+	free(d);
+	free(P);
+	return 0;
 }
 
 /******************************************************************************/
 int get_distance(int node1, int node2){
-  // return distance between node1 and node2
-  //   0 if node1==node2
-  //   weight of edge if any between node1 and node2
-  //   INFINITE otherwise
-  if (node1 == node2)
-    return 0;
-  struct direct_edge_struct *edge = nodes[node1];
-  while (edge != NULL){
-    if (edge->destination_node == node2)
-      return edge->weight;
-    edge = edge->next;
-  }
-  // node2 has not been found as a direct neighbour of node 1
-  return INFINITE;
+	// return distance between node1 and node2
+	//   0 if node1==node2
+	//   weight of edge if any between node1 and node2
+	//   INFINITE otherwise
+	if (node1 == node2)
+		return 0;
+	struct direct_edge_struct *edge = nodes[node1];
+	while (edge != NULL)
+	{
+		if (edge->destination_node == node2)
+			return edge->weight;
+		edge = edge->next;
+	}
+	// node2 has not been found as a direct neighbour of node 1
+	return INFINITE;
 }
 
 /******************************************************************************/
 float dijkstra(){
-  // returns computation time
+	// returns computation time
 
-  int shortest_dist;
-  int nearest_node;
-  double debut;
-  double fin;
+	int shortest_dist;
+	int nearest_node;
+	double debut;
+	double fin;
 
-  P[0] = 1;
-  debut = omp_get_wtime();
-  for (int i = 1; i < num_nodes; i++)
-    P[i] = 0;
+	P[0] = 1;
+	debut = omp_get_wtime();
+	#pragma omp parallel num_threads(4)
+	{
+		#pragma omp for
+		for (int i = 1; i < num_nodes; i++)
+			P[i] = 0;
+		#pragma omp for
+		for (int i = 0; i < num_nodes; i++)
+			d[i] = get_distance(0, i);
 
-  for (int i = 0; i < num_nodes; i++)
-    d[i] = get_distance(0,i);
+		for (int step = 1; step < num_nodes; step++)
+		{
+			// find the nearest node
+			#pragma omp single
+			{
+				shortest_dist = INFINITE;
+				nearest_node = -1;
+			}
+			#pragma omp for
+			for (int i = 0; i < num_nodes; i++){
+				if (!P[i] && d[i] < shortest_dist){
+					#pragma omp critical
+					{
+						/* A METTRE DANS LE RAPPORT PAS BESOIN DE RETESTER !P[I] */
+						if (d[i] < shortest_dist){
+							shortest_dist = d[i];
+							nearest_node = i;
+						}
+					}
+				}
+			}
 
-  for (int step = 1; step < num_nodes; step++ ){
-    // find the nearest node
-    shortest_dist = INFINITE;
-    nearest_node = -1;
-    for (int i = 0; i < num_nodes; i++){
-        if ( !P[i] && d[i] < shortest_dist ){
-        shortest_dist = d[i];
-        nearest_node = i;
-      }
-    }
+			if (nearest_node == -1){
+				#pragma omp single
+				{
+					fprintf(stderr, "Warning: Search ended early, the graph might not be connected.\n");
+				}
+				break;
+			}
+			P[nearest_node] = 1;
 
-    if ( nearest_node == - 1 ){
-      fprintf(stderr,"Warning: Search ended early, the graph might not be connected.\n" );
-      break;
-    }
-
-    P[nearest_node] = 1;
-    for (int i = 0; i < num_nodes; i++){
-      if ( !P[i] ){
-        int dist = get_distance(nearest_node,i);
-        if ( dist < INFINITE )
-          if ( d[nearest_node] + dist < d[i] )
-            d[i] = d[nearest_node] + dist;
-      }
-    }
-  }
-  fin = omp_get_wtime();
-  return fin-debut;
+			#pragma omp for
+			for (int i = 0; i < num_nodes; i++){
+				if (!P[i]){
+					int dist = get_distance(nearest_node, i);
+					if (dist < INFINITE){
+						if (d[nearest_node] + dist < d[i]){
+							#pragma omp critical
+							{
+								if (d[nearest_node] + dist < d[i])
+									d[i] = d[nearest_node] + dist;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	fin = omp_get_wtime();
+	return fin-debut;
 }
 
 /******************************************************************************/
@@ -211,39 +239,37 @@ void read_graph(char *filename){
 }
 
 /***********************DYLAN**********************************************************/
-void afficherDistances() {
-  for(int i = 0; i < num_nodes ; i++) {
-    printf("->Noeud %d : %d\n",i,d[i]);
-  }
+void afficherDistances(){
+	for (int i = 0; i < num_nodes; i++){
+		printf("->Noeud %d : %d\n", i, d[i]);
+	}
 }
 
-void ecrireDistances(char* f) {
-  FILE* fichier = NULL;
-  fichier = fopen(f, "w");
- 
-    if (fichier != NULL)
-    {      
-      for(int i = 0; i < num_nodes ; i++) {
-        char str1[256] = "";
-        char str2[256] = "";
-        sprintf(str1, "%d", i);
-        sprintf(str2, "%d", d[i]);
-        char* deb = concat("->Noeud ",str1);
-        deb = concat(deb," : ");
-        deb = concat(deb,str2);
-        deb = concat(deb,"\n");
-        //deb = "->Noeud " + i + " : " +(char)d[i]+ "\n";
-        fputs(deb, fichier); // Écriture de la chaine
-      }
-      fclose(fichier);
-    }
+void ecrireDistances(char *f){
+	FILE *fichier = NULL;
+	fichier = fopen(f, "w");
+
+	if (fichier != NULL){
+		for (int i = 0; i < num_nodes; i++){
+			char str1[256] = "";
+			char str2[256] = "";
+			sprintf(str1, "%d", i);
+			sprintf(str2, "%d", d[i]);
+			char *deb = concat("->Noeud ", str1);
+			deb = concat(deb, " : ");
+			deb = concat(deb, str2);
+			deb = concat(deb, "\n");
+			//deb = "->Noeud " + i + " : " +(char)d[i]+ "\n";
+			fputs(deb, fichier); // Écriture de la chaine
+		}
+		fclose(fichier);
+	}
 }
 
-char *concat(const char *s1, const char *s2)
-{
-     char *s3=NULL;
-     s3=(char *)malloc((strlen(s1)+strlen(s2))+1);
-     strcpy(s3,s1);
-     strcat(s3,s2);
-     return s3;
+char *concat(const char *s1, const char *s2){
+	char *s3 = NULL;
+	s3 = (char *)malloc((strlen(s1) + strlen(s2)) + 1);
+	strcpy(s3, s1);
+	strcat(s3, s2);
+	return s3;
 }
